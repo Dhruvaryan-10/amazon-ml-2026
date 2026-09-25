@@ -1,0 +1,2 @@
+exp_id,date,change,blocking_recall,avg_candidates,cv_f05,public_lb,submission_hash,notes
+exp_001,2026-09-25,EDA + scorer,,,0.056,,,predict-nothing baseline; 1:1 ownership confirmed
