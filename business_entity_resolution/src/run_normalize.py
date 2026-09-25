@@ -8,15 +8,23 @@ from normalize import normalize_df
 PQ = os.path.join(os.path.dirname(__file__), "..", "data", "parquet")
 
 
-def run(prefix, workers=6):
+WORKERS = 1   # 1 = no multiprocessing (safe on Windows). Try 2-3 for the full data if RAM allows.
+
+
+def run(prefix, workers=WORKERS):
     for k in ["1", "2", "3"]:
         src, out = f"{PQ}/{prefix}_source{k}.parquet", f"{PQ}/{prefix}_source{k}_norm.parquet"
         t = time.time()
         df = pd.read_parquet(src)
-        with Pool(workers) as p:
-            step = len(df) // (workers * 4) + 1
-            parts = p.map(normalize_df, [df.iloc[i:i + step] for i in range(0, len(df), step)])
+        step = 50_000
+        chunks = [df.iloc[i:i + step] for i in range(0, len(df), step)]
+        if workers > 1:
+            with Pool(workers) as p:
+                parts = p.map(normalize_df, chunks)
+        else:
+            parts = [normalize_df(c) for c in chunks]
         df = pd.concat(parts)
+        del parts, chunks
         df.to_parquet(out, index=False)
         print(f"{prefix}_source{k}: {len(df):,} rows normalised ({time.time()-t:.0f}s)", flush=True)
     return df

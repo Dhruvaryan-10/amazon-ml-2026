@@ -15,13 +15,15 @@ NATIVE = {
 # --- legal forms (US / India / France + transliterated Hindi) -> canonical ---
 LEGAL = {
     "pvt": "private", "pvte": "private", "private": "private", "praivet": "private", "praivt": "private",
-    "ltd": "limited", "limited": "limited", "limitted": "limited", "limited.": "limited",
+    "pra": "private", "li": "limited", "ltd": "limited", "limited": "limited", "limitted": "limited", "limited.": "limited",
     "llc": "llc", "llp": "llp", "elelpi": "llp", "inc": "inc", "incorporated": "inc",
     "corp": "corporation", "corporation": "corporation", "co": "company", "company": "company",
     "plc": "plc", "opc": "opc", "lp": "lp", "pllc": "pllc", "pc": "pc",
     "sa": "sa", "sas": "sas", "sasu": "sasu", "sarl": "sarl", "eurl": "eurl", "snc": "snc",
     "sci": "sci", "scop": "scop", "societe": "societe", "ste": "societe", "gmbh": "gmbh",
 }
+SKEL_LEGAL = {"prwt": "private", "prwte": "private", "lmtd": "limited", "lmtt": "limited",
+              "lmtdd": "limited", "lmttd": "limited", "lmt": "limited", "krprtn": "corporation", "kmpn": "company"}
 HONORIFIC = {"m", "s", "ms", "mr", "mrs", "dr", "shri", "sri", "smt", "messrs", "the", "and", "et", "le", "la", "les"}
 
 # --- address abbreviations (applied on tokens) ---
@@ -88,20 +90,30 @@ def to_ascii(s: str) -> str:
     out = []
     for w in s.split():
         latin = all(ord(ch) < 0x0370 for ch in w)          # Latin/accented Latin word
-        a = unidecode(w).replace("N", "n").lower()
+        a = unidecode(w).replace("oN", "o").replace("N", "n").lower()
         out.append(a if latin else _REPEAT.sub(r"\1", a))
     return " ".join(out)
 
 
 def _clean_tokens(s: str) -> list:
-    s = s.replace("&", " and ").replace("@", " at ")
+    s = s.replace("&", " and ").replace("@", " ")
+    s = re.sub(r"\b(?:[a-z]\.){2,}", lambda m: m.group().replace(".", ""), s)   # l.l.c. -> llc
     return [t for t in _NONALNUM.sub(" ", s).split() if t]
 
 
+def skel(t: str) -> str:
+    """Phonetic consonant skeleton, robust to transliteration:
+    'sonftveyr'/'software' -> 'sftwr', 'prphekt'/'perfect' -> 'prfkt', 'piraivet'/'private' -> 'prwt'."""
+    if t.isdigit():
+        return t
+    t = t.replace("ph", "f").replace("ck", "k").replace("c", "k").replace("q", "k")
+    t = t.replace("x", "ks").replace("v", "w").replace("z", "s").replace("h", "")
+    t = re.sub(r"[aeiouy]", "", t)
+    return _REPEAT.sub(r"\1", t)
+
+
 def consonants(tokens) -> str:
-    """Vowel-free skeleton: robust to transliteration ("adity" vs "aditya" -> "dty")."""
-    out = [re.sub(r"[aeiouy]", "", t) or t for t in tokens]
-    return " ".join(t for t in out if t)
+    return " ".join(x for x in (skel(t) for t in tokens) if x)
 
 
 def norm_name(raw: str) -> dict:
@@ -113,8 +125,10 @@ def norm_name(raw: str) -> dict:
         s = m.group(3)
     toks = _clean_tokens(s)
     toks = [t for t in toks if t not in {"null", "none", "nan", "na"}]
-    legal = sorted({LEGAL[t] for t in toks if t in LEGAL})
-    core = [t for t in toks if t not in LEGAL and t not in HONORIFIC]
+    def legal_of(t):
+        return LEGAL.get(t) or (SKEL_LEGAL.get(skel(t)) if len(t) >= 5 else None)
+    legal = sorted({legal_of(t) for t in toks if legal_of(t)})
+    core = [t for t in toks if not legal_of(t) and t not in HONORIFIC]
     if not core:                                  # name was only legal words -> keep them
         core = [t for t in toks if t not in HONORIFIC] or toks
     return {
@@ -131,6 +145,7 @@ def norm_name(raw: str) -> dict:
 def norm_addr(raw: str, country: str) -> dict:
     s = to_ascii(raw)
     s = _POBOX.sub(" ", s)
+    s = re.sub(r"\bc\s*/\s*o\b[^,]*,?", " ", s)          # "C/O Sunita Singh," -> removed
     # US zip / FR code postal (5 digits), IN PIN (6). Ignore a number that STARTS the
     # address: that is a house number ("01130 Regency Road"), not a postcode.
     postcodes = [m.group() for m in re.finditer(r"\b\d{5,6}\b", s)
@@ -143,7 +158,8 @@ def norm_addr(raw: str, country: str) -> dict:
             state = _STATE_MAP[country][found[-1]]
             s = _STATE_RE[country].sub(" ", s2)
     toks = _clean_tokens(s)
-    toks = [ADDR.get(t, t) for t in toks if t not in ADDR_DROP]
+    toks = [t for t in toks if t not in ADDR_DROP]
+    toks = [t if (len(t) == 1 and country != "US") else ADDR.get(t, t) for t in toks]
     toks = [(t.lstrip("0") or "0") if t.isdigit() else t for t in toks]   # "01130" -> "1130"
     # a lone 2-letter token that is a state code (e.g. "nc", "ka") -> state field
     codes = set(_STATE_MAP.get(country, {}).values())
