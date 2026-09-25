@@ -1,3 +1,4 @@
 exp_id,date,change,blocking_recall,avg_candidates,cv_f05,public_lb,submission_hash,notes
 exp_001,2026-09-25,EDA + scorer,,,0.056,,,predict-nothing baseline; 1:1 ownership confirmed
 exp_001,2026-09-25,blocking v1 (key overlap) K=50,0.9243,47.0,,,,"dev; caps={'n': 300, 'N': 40, 'p': 150, 'a': 150}"
+exp_002,2026-09-25,"blocking v2 (+name pairs, full name) K=50",0.965,47.9,,,,"dev; caps={'n': 300, 'N': 40, 'p': 150, 'a': 150, 'P': 150, 'e': 150}"
