@@ -43,7 +43,8 @@ def pair_features(cands, s1, other):
     out = {k: np.empty(n, dtype=np.float32) for k in [
         "nm_ratio", "nm_tset", "nm_tsort", "nm_partial", "nm_jw", "nm_cons_ratio", "nm_cons_tset",
         "nm_nospace_ratio", "nm_raw_tset", "nm_tok_jacc", "nm_len_diff",
-        "ad_tset", "ad_ratio", "ad_words_jacc", "ad_nums_jacc", "ad_nums_overlap"]}
+        "ad_tset", "ad_ratio", "ad_words_jacc", "ad_nums_jacc", "ad_nums_overlap",
+        "ad_num_variant", "nm_nospace_partial"]}
     a_core, b_core = A.name_core.values, B.name_core.values
     a_cons, b_cons = A.name_cons.values, B.name_cons.values
     a_ns, b_ns = A.name_nospace.values, B.name_nospace.values
@@ -74,6 +75,12 @@ def pair_features(cands, s1, other):
         na, nb = set(a_n[i].split()), set(b_n[i].split())
         out["ad_nums_jacc"][i] = _jacc(na, nb)
         out["ad_nums_overlap"][i] = len(na & nb)
+        # house numbers equal after dropping a leading/trailing digit on either side (source noise)
+        va = na | {n[1:] for n in na if len(n) >= 3} | {n[:-1] for n in na if len(n) >= 3}
+        vb = nb | {n[1:] for n in nb if len(n) >= 3} | {n[:-1] for n in nb if len(n) >= 3}
+        out["ad_num_variant"][i] = np.nan if not na or not nb else float(bool((va & nb) or (vb & na)))
+        # "morrisheartlandsun" (domain) vs "morris heartland sun": containment of the space-less names
+        out["nm_nospace_partial"][i] = fuzz.partial_ratio(a_ns[i], b_ns[i])
     F.update(out)
 
     # ---- categorical agreement: 1 = equal, 0 = conflict, nan = missing on a side ----

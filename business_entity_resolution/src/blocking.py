@@ -11,7 +11,10 @@ Every record emits "keys". Two records sharing a rare key are likely the same bu
   x  NAME token x ADDRESS word, whole country ("prm|gorakhpur", "lf|balkishunganj"): a common
      name word ("prime", "life") is rare once tied to a locality; the phonetic skeleton makes it
      work across scripts ("Prime" / "प्राइम" -> "prm")
+  a  also uses house-number VARIANTS with the first or last digit dropped: the noisy sources often
+     lose a digit ("4829 Cottage Grove" vs "829 Cottage Grove", "1566 12 Street" vs "156 12 Street")
 (v4: dropped country-wide single-token "N" keys: at full density 99% of them exceed the cap)
+(v5: + house-number variants on locality words; dropped "Q" prefix-pair keys: 80% over cap at full density)
 Keys are hashed to int64. Keys shared by more than CAP[type] S2/S3 records are dropped.
 Each S1 entity gets its top-K S2/S3 records by the sum of IDF weights of shared keys.
 
@@ -24,9 +27,9 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(__file__))
 PQ = os.path.join(os.path.dirname(__file__), "..", "data", "parquet")
 
-TYPES = ["n", "p", "a", "P", "e", "Q", "x"]
-CAPS = {"n": 300, "p": 150, "a": 150, "P": 150, "e": 150, "Q": 100, "x": 150}   # dev scale
-WEIGHT = {"n": 1.0, "p": 0.8, "a": 1.2, "P": 1.0, "e": 1.0, "Q": 0.7, "x": 1.2}
+TYPES = ["n", "p", "a", "P", "e", "x"]
+CAPS = {"n": 300, "p": 150, "a": 150, "P": 150, "e": 150, "x": 150}   # dev scale
+WEIGHT = {"n": 1.0, "p": 0.8, "a": 1.2, "P": 1.0, "e": 1.0, "x": 1.2}
 GENERIC_ADDR = set("""road street avenue drive lane nagar colony floor house block sector near opposite main
 building apartment unit suite plot flat shop ground first second third city district west east north south
 circle court place highway boulevard trail parkway village town area market cross phase park""".split())
@@ -48,10 +51,6 @@ def _keys_of(c, st, core, cons, nospace, nums, words):
         for x in range(len(toks)):
             for y in range(x + 1, len(toks)):
                 ks.add(f"P|{c}|{toks[x]}|{toks[y]}")
-    pre = sorted({t[:4] for t in core.split() if len(t) >= 4})[:8]
-    for x in range(len(pre)):
-        for y in range(x + 1, len(pre)):
-            ks.add(f"Q|{c}|{pre[x]}|{pre[y]}")
     ws = [w for w in words.split() if len(w) >= 4]
     # name x address cross keys: 3 longest name tokens (words + skeletons) x 4 longest locality words
     loc = sorted({w for w in ws if w not in GENERIC_ADDR}, key=len, reverse=True)[:4]
@@ -65,6 +64,10 @@ def _keys_of(c, st, core, cons, nospace, nums, words):
         if n != "0":
             for w in ws:
                 ks.add(f"a|{c}|{n}|{w}")
+            if len(n) >= 3 and loc:                      # digit-dropped variants, locality words only
+                for v in (n[1:], n[:-1]):
+                    for w in loc:
+                        ks.add(f"a|{c}|{v}|{w}")
     return ks
 
 
@@ -202,5 +205,5 @@ if __name__ == "__main__":
         print(f"   S1 {a.business_name} | {a.business_address}\n   -> {b.business_name} | {b.business_address}\n")
     from explog import log
     k = 50 if 50 in res else max(res)
-    log(f"blocking v4 (+name x address, -N) K={k}", notes=f"{prefix}; caps={CAPS}",
+    log(f"blocking v5 (+digit variants, -Q) K={k}", notes=f"{prefix}; caps={CAPS}",
         blocking_recall=res[k][0], avg_candidates=round(res[k][1], 1))
