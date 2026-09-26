@@ -7,3 +7,4 @@ exp_004,2026-09-25,LGBM v1 + 1:1 ownership + threshold,,,0.974,,,dev val; thr=0.
 exp_005,2026-09-25,full-density blocking CAP_MULT=3 K=50,0.9216,,,,,"train pool, 25k val S1"
 exp_006,2026-09-25,LGBM full-density,,,0.9382,,,25k val entities; thr=0.65; trees=1619
 exp_007,2026-09-26,decision: expected-F vs threshold,,,0.9382,,,threshold=0.9382; expF(miss=0.3)=0.9376
+exp_008,2026-09-26,"blocking v4 diagnose (full density, 25k val)",0.9399,49.8,,,,rank51-300=0.0244; keymiss=0.0358
