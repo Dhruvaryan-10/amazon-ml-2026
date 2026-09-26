@@ -14,8 +14,16 @@ def _jacc(a, b):
     return len(a & b) / len(a | b)
 
 
-def pair_features(cands, s1, other):
-    """cands: DataFrame(s1_id, cand_id, score, rank). s1/other: normalised frames."""
+def _tok_match(t, others):
+    """t matches some token in others exactly, by phonetic skeleton or by >=85 fuzzy ratio (typos)."""
+    if t in others:
+        return True
+    return any(fuzz.ratio(t, o) >= 85 for o in others)
+
+
+def pair_features(cands, s1, other, tokfreq=None, n_pool=1):
+    """cands: DataFrame(s1_id, cand_id, score, rank). s1/other: normalised frames.
+    tokfreq: {name token: #pool records containing it} -> how unusual a differing word is."""
     cols = ["entity_id", "business_name"] + NAME_COLS + ADDR_COLS
     A = s1[cols].drop_duplicates("entity_id").set_index("entity_id").loc[cands.s1_id.values]
     B = other[cols].drop_duplicates("entity_id").set_index("entity_id").loc[cands.cand_id.values]
@@ -44,7 +52,13 @@ def pair_features(cands, s1, other):
         "nm_ratio", "nm_tset", "nm_tsort", "nm_partial", "nm_jw", "nm_cons_ratio", "nm_cons_tset",
         "nm_nospace_ratio", "nm_raw_tset", "nm_tok_jacc", "nm_len_diff",
         "ad_tset", "ad_ratio", "ad_words_jacc", "ad_nums_jacc", "ad_nums_overlap",
-        "ad_num_variant", "nm_nospace_partial"]}
+        "ad_num_variant", "nm_nospace_partial",
+        "nm_a_only_n", "nm_b_only_n", "nm_a_only_maxidf", "nm_b_only_maxidf", "nm_a_only_sumidf",
+        "nm_b_only_sumidf", "nm_b_rare_single", "nm_min_idf_shared", "ad_num_absdiff", "legal_jacc"]}
+    tf = tokfreq or {}
+    def idf(t):
+        return float(np.log1p(n_pool / (1 + tf.get(t, 0))))
+    a_leg, b_leg = A.legal.values, B.legal.values
     a_core, b_core = A.name_core.values, B.name_core.values
     a_cons, b_cons = A.name_cons.values, B.name_cons.values
     a_ns, b_ns = A.name_nospace.values, B.name_nospace.values
@@ -81,6 +95,23 @@ def pair_features(cands, s1, other):
         out["ad_num_variant"][i] = np.nan if not na or not nb else float(bool((va & nb) or (vb & na)))
         # "morrisheartlandsun" (domain) vs "morris heartland sun": containment of the space-less names
         out["nm_nospace_partial"][i] = fuzz.partial_ratio(a_ns[i], b_ns[i])
+        # which name words differ, and how unusual they are (decoys swap one specific word:
+        # "Eminent Plastic" vs "Eminent Beverages"; noise adds generic ones: "... Services")
+        a_only = [t for t in ta if not _tok_match(t, tb)]
+        b_only = [t for t in tb if not _tok_match(t, ta)]
+        ia, ib = [idf(t) for t in a_only], [idf(t) for t in b_only]
+        out["nm_a_only_n"][i], out["nm_b_only_n"][i] = len(a_only), len(b_only)
+        out["nm_a_only_maxidf"][i] = max(ia) if ia else 0.0
+        out["nm_b_only_maxidf"][i] = max(ib) if ib else 0.0
+        out["nm_a_only_sumidf"][i], out["nm_b_only_sumidf"][i] = sum(ia), sum(ib)
+        shared = ta & tb
+        out["nm_min_idf_shared"][i] = min(idf(t) for t in shared) if shared else 0.0
+        # a single made-up word nobody else uses ("Pyraveo") = renamed record -> trust the address
+        out["nm_b_rare_single"][i] = float(len(tb) == 1 and tf.get(next(iter(tb)), 0) <= 2) if tb else 0.0
+        di = [abs(int(x) - int(y)) for x in na for y in nb if len(x) < 9 and len(y) < 9]
+        out["ad_num_absdiff"][i] = np.log1p(min(di)) if di else np.nan
+        la, lb = set(a_leg[i].split()), set(b_leg[i].split())
+        out["legal_jacc"][i] = _jacc(la, lb)
     F.update(out)
 
     # ---- categorical agreement: 1 = equal, 0 = conflict, nan = missing on a side ----

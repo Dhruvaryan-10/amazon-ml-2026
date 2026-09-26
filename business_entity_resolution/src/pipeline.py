@@ -35,8 +35,22 @@ def load(prefix, k, cols):
     return pd.read_parquet(f"{PQ}/{prefix}_source{k}_norm.parquet", columns=cols)
 
 
-def block(prefix):
-    """-> s1 key frame, candidate table (int rows) with candidate-side stats, pool ids."""
+def block(prefix, reuse=False):
+    """-> s1 ids, candidate table (int rows) with candidate-side stats, pool ids.
+    Cached to data/parquet/{prefix}_cands.parquet; reuse=True skips blocking if the cache exists."""
+    cpath, ipath = f"{PQ}/{prefix}_cands.parquet", f"{PQ}/{prefix}_cand_ids.npz"
+    if reuse and os.path.exists(cpath):
+        c = pd.read_parquet(cpath)
+        z = np.load(ipath, allow_pickle=True)
+        say(f"reusing cached {prefix} candidates: {len(c):,} pairs")
+        return z["s1"], c, z["pool"]
+    s1_ids, c, pool_ids = _block(prefix)
+    c.to_parquet(cpath, index=False)
+    np.savez(ipath, s1=s1_ids, pool=pool_ids)
+    return s1_ids, c, pool_ids
+
+
+def _block(prefix):
     other = pd.concat([load(prefix, k, KEY_COLS) for k in "23"], ignore_index=True)
     say(f"pool loaded: {len(other):,} S2/S3 records")
     idx = KeyIndex(other, caps={k: v * CAP_MULT for k, v in CAPS.items()})
@@ -63,21 +77,27 @@ FCOLS = ["entity_id", "business_name"] + NAME_COLS + ADDR_COLS
 
 
 def load_tables(prefix):
-    """Normalised columns needed for features, kept as compact Arrow tables (row order = pool order)."""
+    """Normalised columns needed for features, kept as compact Arrow tables (row order = pool order),
+    plus name-token document frequencies over the whole S2/S3 pool."""
     s1t = pq.read_table(f"{PQ}/{prefix}_source1_norm.parquet", columns=FCOLS)
     ot = pa.concat_tables([pq.read_table(f"{PQ}/{prefix}_source{k}_norm.parquet", columns=FCOLS) for k in "23"])
-    return s1t, ot
+    toks = pc.list_flatten(pc.utf8_split_whitespace(ot["name_core"].combine_chunks()))
+    vc = pc.value_counts(toks)
+    tokfreq = dict(zip(vc.field("values").to_pylist(), vc.field("counts").to_pylist()))
+    return s1t, ot, tokfreq
 
 
-def features_for(tables, s1_ids, cands, pool_ids, s1_rows):
+def features_for(tables, s1_ids, cands, pool_ids, s1_rows, return_recs=False):
     """Features for the candidate pairs of the given S1 rows."""
-    s1t, ot = tables
+    s1t, ot, tokfreq = tables
     sub = cands[np.isin(cands.s1_row.to_numpy(), s1_rows)].reset_index(drop=True)
     sub["s1_id"] = s1_ids[sub.s1_row.to_numpy()]
     sub["cand_id"] = pool_ids[sub.o_row.to_numpy()]
     s1n = s1t.take(pa.array(np.unique(sub.s1_row.to_numpy()))).to_pandas()
     on = ot.take(pa.array(np.unique(sub.o_row.to_numpy()))).to_pandas()
-    X = pair_features(sub, s1n, on)
+    X = pair_features(sub, s1n, on, tokfreq=tokfreq, n_pool=len(ot))
+    if return_recs:
+        return sub[["s1_id", "cand_id"]], X, on.drop_duplicates("entity_id").set_index("entity_id")
     return sub[["s1_id", "cand_id"]], X
 
 
@@ -85,8 +105,8 @@ def label(pairs, truth_pairs):
     return np.array([(s, c) in truth_pairs for s, c in zip(pairs.s1_id.values, pairs.cand_id.values)], dtype=np.int8)
 
 
-def run_train():
-    s1_ids, cands, pool_ids = block("train")
+def run_train(reuse=False):
+    s1_ids, cands, pool_ids = block("train", reuse)
     split = pd.read_parquet(f"{PQ}/split.parquet").set_index("entity_id").loc[s1_ids]
     rng = np.random.RandomState(SEED)
     rows = np.arange(len(s1_ids))
@@ -118,7 +138,7 @@ def run_train():
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "train"
     if mode == "train":
-        run_train()
+        run_train(reuse="reuse" in sys.argv)
     else:
         from predict import run_test
-        run_test()
+        run_test(reuse="reuse" in sys.argv)

@@ -56,5 +56,6 @@ if __name__ == "__main__":
     imp = pd.Series(model.feature_importance("gain"), index=feats).sort_values(ascending=False)
     print("\ntop 10 features:\n" + (imp / imp.sum() * 100).round(1).head(10).to_string())
     model.save_model(os.path.join(OUT, "lgb_full.txt"), num_iteration=model.best_iteration)
-    json.dump({"threshold": thr, "features": feats}, open(os.path.join(OUT, "lgb_full.json"), "w"))
+    json.dump({"threshold": thr, "features": feats, "trees": model.best_iteration},
+              open(os.path.join(OUT, "lgb_full.json"), "w"))
     log("LGBM full-density", notes=f"25k val entities; thr={thr}; trees={model.best_iteration}", cv_f05=res[thr])
