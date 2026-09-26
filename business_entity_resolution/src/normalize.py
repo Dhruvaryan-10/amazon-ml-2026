@@ -116,7 +116,17 @@ def consonants(tokens) -> str:
     return " ".join(x for x in (skel(t) for t in tokens) if x)
 
 
-def norm_name(raw: str) -> dict:
+FR_LEGAL = {"cie": "company", "selarl": "selarl", "earl": "earl", "gaec": "gaec", "scea": "scea", "sca": "sca",
+            "sel": "sel", "scp": "scp", "sem": "sem", "gie": "gie"}
+# French street abbreviations (FR only: "st" is Saint in France but Street in the US)
+FR_ADDR = {"st": "saint", "ste": "sainte", "r": "rue", "ch": "chemin", "chem": "chemin", "av": "avenue",
+           "ave": "avenue", "bd": "boulevard", "blvd": "boulevard", "bld": "boulevard", "boul": "boulevard",
+           "imp": "impasse", "pl": "place", "all": "allee", "rte": "route", "fg": "faubourg", "fbg": "faubourg",
+           "sq": "square", "crs": "cours", "qu": "quai", "qua": "quai", "res": "residence", "lot": "lotissement",
+           "zi": "zone", "za": "zone", "pte": "porte", "prom": "promenade", "sent": "sentier", "n": "", "no": "", "ndeg": "", "deg": ""}
+
+
+def norm_name(raw: str, country: str = None) -> dict:
     s = to_ascii(raw).strip()
     s = re.sub(r"\bm\s*/\s*s\b", " ", s)          # "M/s"
     m = _DOMAIN.match(s.replace(" ", ""))          # "wilfordhancock.com" -> "wilfordhancock"
@@ -125,8 +135,9 @@ def norm_name(raw: str) -> dict:
         s = m.group(3)
     toks = _clean_tokens(s)
     toks = [t for t in toks if t not in {"null", "none", "nan", "na"}]
+    fr = country == "France"
     def legal_of(t):
-        return LEGAL.get(t) or (SKEL_LEGAL.get(skel(t)) if len(t) >= 5 else None)
+        return LEGAL.get(t) or (FR_LEGAL.get(t) if fr else None) or (SKEL_LEGAL.get(skel(t)) if len(t) >= 5 else None)
     legal = sorted({legal_of(t) for t in toks if legal_of(t)})
     core = [t for t in toks if not legal_of(t) and t not in HONORIFIC]
     if not core:                                  # name was only legal words -> keep them
@@ -159,7 +170,11 @@ def norm_addr(raw: str, country: str) -> dict:
             s = _STATE_RE[country].sub(" ", s2)
     toks = _clean_tokens(s)
     toks = [t for t in toks if t not in ADDR_DROP]
-    toks = [t if (len(t) == 1 and country != "US") else ADDR.get(t, t) for t in toks]
+    if country == "France":
+        toks = [FR_ADDR.get(t, ADDR.get(t, t) if len(t) > 1 else t) for t in toks]
+        toks = [t for t in toks if t]
+    else:
+        toks = [t if (len(t) == 1 and country != "US") else ADDR.get(t, t) for t in toks]
     toks = [(t.lstrip("0") or "0") if t.isdigit() else t for t in toks]   # "01130" -> "1130"
     # a lone 2-letter token that is a state code (e.g. "nc", "ka") -> state field
     codes = set(_STATE_MAP.get(country, {}).values())
@@ -185,7 +200,8 @@ def norm_addr(raw: str, country: str) -> dict:
 def normalize_df(df):
     """Adds normalised columns to a source dataframe (entity_id, business_name, business_address, country)."""
     import pandas as pd
-    names = pd.DataFrame([norm_name(x) for x in df["business_name"].values], index=df.index)
+    names = pd.DataFrame([norm_name(x, c) for x, c in zip(df["business_name"].values, df["country"].values)],
+                         index=df.index)
     addrs = pd.DataFrame([norm_addr(a, c) for a, c in zip(df["business_address"].values,
                                                           df["country"].values)], index=df.index)
     return pd.concat([df, names, addrs], axis=1)

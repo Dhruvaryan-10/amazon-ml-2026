@@ -14,3 +14,6 @@ exp_011,2026-09-26,stage-2 stacking (S2<->S3 agreement),,,0.9559,,,stage1=0.9530
 exp_012,2026-09-26,full-density blocking CAP_MULT=3 K=50,0.9424,,,,,"train pool, 25k val S1"
 exp_013,2026-09-26,LGBM full-density,,,0.9605,,,25k val entities; thr=0.75; trees=1540
 exp_014,2026-09-26,stage-2 stacking (S2<->S3 agreement),,,0.9622,,,stage1=0.9605; thr=0.7
+exp_015,2026-09-26,full-density blocking CAP_MULT=3 K=50,0.9673,,,,,"train pool, 25k val S1"
+exp_016,2026-09-26,LGBM full-density,,,0.9752,,,25k val entities; thr=0.7; trees=942
+exp_017,2026-09-26,stage-2 stacking (S2<->S3 agreement),,,0.9764,,,stage1=0.9752; thr=0.7

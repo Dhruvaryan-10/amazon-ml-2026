@@ -56,4 +56,29 @@ def stack_features(pairs, p1, recs):
                 w += pp[j] * max(sn, sa) / 100.0
             nm[i], ad[i], ns[i], wsum[i] = best_n, best_a, best_s, w
     d["mut_name"], d["mut_addr"], d["mut_nospace"], d["mut_weighted"] = nm, ad, ns, wsum
-    return d.drop(columns=["s1_id", "cand_id", "is_s3"])
+    return d.drop(columns=["s1_id", "cand_id", "is_s3", "p1"])
+
+
+P_MIN = 0.01          # stage-2 only re-scores pairs stage-1 doesn't already reject
+BLK_KEEP = ["blk_score", "blk_rank", "blk_rev_rank", "blk_rev_score", "blk_cand_gap", "blk_cand_rank",
+            "blk_cand_n_s1", "blk_cand_n_tie", "blk_score_rel", "blk_n_cands"]
+
+
+def comp_features(rec, p1):
+    """S1-vs-S1 competition by PROBABILITY, per record (S2/S3 id), over every S1 that has it as candidate.
+    rec: int codes of the record; p1: stage-1 probabilities. Returns dict of arrays aligned with inputs."""
+    o = np.lexsort((-p1, rec))
+    r, p = rec[o], p1[o]
+    first = np.r_[0, np.flatnonzero(np.diff(r)) + 1]
+    size = np.diff(np.r_[first, len(r)])
+    top1 = np.repeat(p[first], size)
+    top2 = np.repeat(np.where(size > 1, p[np.minimum(first + 1, len(p) - 1)], 0.0), size)
+    rank = np.arange(len(r)) - np.repeat(first, size) + 1
+    other = np.where(rank == 1, top2, top1)                 # best OTHER S1's probability for this record
+    nhi = np.repeat(np.add.reduceat((p >= 0.5).astype(np.int32), first), size)
+    out = {"rec_p1_other": other, "rec_p1_margin": p - other, "rec_p1_rank": rank.astype(np.float32),
+           "rec_n_hi": nhi.astype(np.float32), "rec_n_s1": np.repeat(size, size).astype(np.float32)}
+    res = {}
+    for k, v in out.items():
+        a = np.empty(len(rec), dtype=np.float32); a[o] = v; res[k] = a
+    return res

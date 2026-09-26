@@ -31,7 +31,10 @@ if __name__ == "__main__":
     t0 = time.time()
     tr = pd.read_parquet(f"{PQ}/full_train_feats.parquet")
     va = pd.read_parquet(f"{PQ}/full_val_feats.parquet")
-    feats = [c for c in tr.columns if c not in ("s1_id", "cand_id", "label")]
+    if "is_comp" in tr:              # stage-1 trains/evaluates on the sampled entities' own pairs
+        tr = tr[tr.is_comp == 0].reset_index(drop=True)
+        va = va[va.is_comp == 0].reset_index(drop=True)
+    feats = [c for c in tr.columns if c not in ("s1_id", "cand_id", "label", "is_comp")]
     # early-stopping set: 10% of TRAIN entities (never the val entities we report on)
     ents = tr.s1_id.unique()
     es_ents = set(np.random.RandomState(SEED).choice(ents, len(ents) // 10, replace=False))
