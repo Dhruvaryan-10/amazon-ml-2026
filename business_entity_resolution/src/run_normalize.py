@@ -1,39 +1,44 @@
-"""Normalise the dev (or train/test) parquet files. Usage: python src/run_normalize.py dev"""
+"""Normalise source files, streaming in chunks so memory stays low.
+
+Usage:  python src/run_normalize.py dev      (dev sample, prints examples)
+        python src/run_normalize.py train    (full train: ~10 min)
+        python src/run_normalize.py test     (full test:  ~10 min)
+"""
 import os, sys, time
-from multiprocessing import Pool
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 sys.path.insert(0, os.path.dirname(__file__))
 from normalize import normalize_df
 
 PQ = os.path.join(os.path.dirname(__file__), "..", "data", "parquet")
+STEP = 100_000
 
 
-WORKERS = 1   # 1 = no multiprocessing (safe on Windows). Try 2-3 for the full data if RAM allows.
-
-
-def run(prefix, workers=WORKERS):
+def run(prefix):
     for k in ["1", "2", "3"]:
         src, out = f"{PQ}/{prefix}_source{k}.parquet", f"{PQ}/{prefix}_source{k}_norm.parquet"
         t = time.time()
-        df = pd.read_parquet(src)
-        step = 50_000
-        chunks = [df.iloc[i:i + step] for i in range(0, len(df), step)]
-        if workers > 1:
-            with Pool(workers) as p:
-                parts = p.map(normalize_df, chunks)
-        else:
-            parts = [normalize_df(c) for c in chunks]
-        df = pd.concat(parts)
-        del parts, chunks
-        df.to_parquet(out, index=False)
-        print(f"{prefix}_source{k}: {len(df):,} rows normalised ({time.time()-t:.0f}s)", flush=True)
-    return df
+        pf = pq.ParquetFile(src)
+        writer, n = None, 0
+        for batch in pf.iter_batches(batch_size=STEP):
+            df = normalize_df(batch.to_pandas())
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            if writer is None:
+                writer = pq.ParquetWriter(out, table.schema)
+            writer.write_table(table.cast(writer.schema))
+            n += len(df)
+            if n % 1_000_000 < STEP:
+                print(f"   {prefix}_source{k}: {n:,} rows ({time.time()-t:.0f}s)", flush=True)
+        writer.close()
+        print(f"{prefix}_source{k}: {n:,} rows normalised ({time.time()-t:.0f}s)", flush=True)
 
 
 if __name__ == "__main__":
     prefix = sys.argv[1] if len(sys.argv) > 1 else "dev"
     run(prefix)
-    # show 8 random examples per source so we can eyeball the result
+    if prefix != "dev":
+        sys.exit()
     cols = ["business_name", "name_core", "legal", "business_address", "addr_norm", "addr_nums", "postcode", "state"]
     pd.set_option("display.width", 250); pd.set_option("display.max_colwidth", 60)
     for k in ["1", "2", "3"]:
@@ -43,5 +48,3 @@ if __name__ == "__main__":
         nonascii = df[~df.business_name.map(str.isascii)]
         print(f"\nnon-Latin names: {len(nonascii):,} ({len(nonascii)/len(df)*100:.1f}%)  examples:")
         print(nonascii[["business_name", "name_core", "name_cons"]].head(5).to_string(index=False))
-        print(f"empty name_core: {(df.name_core=='').mean()*100:.2f}%   empty addr: {(df.addr_norm=='').mean()*100:.2f}%   "
-              f"has postcode: {(df.postcode!='').mean()*100:.1f}%   has state: {(df.state!='').mean()*100:.1f}%")

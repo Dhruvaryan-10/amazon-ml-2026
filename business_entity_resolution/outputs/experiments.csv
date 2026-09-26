@@ -2,3 +2,8 @@ exp_id,date,change,blocking_recall,avg_candidates,cv_f05,public_lb,submission_ha
 exp_001,2026-09-25,EDA + scorer,,,0.056,,,predict-nothing baseline; 1:1 ownership confirmed
 exp_001,2026-09-25,blocking v1 (key overlap) K=50,0.9243,47.0,,,,"dev; caps={'n': 300, 'N': 40, 'p': 150, 'a': 150}"
 exp_002,2026-09-25,"blocking v2 (+name pairs, full name) K=50",0.965,47.9,,,,"dev; caps={'n': 300, 'N': 40, 'p': 150, 'a': 150, 'P': 150, 'e': 150}"
+exp_003,2026-09-25,blocking v3 (+prefix pairs) K=50,0.9662,48.0,,,,"dev; caps={'n': 300, 'N': 40, 'p': 150, 'a': 150, 'P': 150, 'e': 150, 'Q': 100}"
+exp_004,2026-09-25,LGBM v1 + 1:1 ownership + threshold,,,0.974,,,dev val; thr=0.7; trees=1050
+exp_005,2026-09-25,full-density blocking CAP_MULT=3 K=50,0.9216,,,,,"train pool, 25k val S1"
+exp_006,2026-09-25,LGBM full-density,,,0.9382,,,25k val entities; thr=0.65; trees=1619
+exp_007,2026-09-26,decision: expected-F vs threshold,,,0.9382,,,threshold=0.9382; expF(miss=0.3)=0.9376
