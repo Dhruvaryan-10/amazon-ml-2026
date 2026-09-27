@@ -45,8 +45,13 @@ def stage2_matrix(df, p1, recs):
 if __name__ == "__main__":
     meta = json.load(open(os.path.join(OUT, "lgb_full.json")))
     F1 = meta["features"]
-    tr = pd.read_parquet(f"{PQ}/full_train_feats.parquet").sort_values(["is_comp", "s1_id"], kind="stable").reset_index(drop=True)
-    va = pd.read_parquet(f"{PQ}/full_val_feats.parquet").sort_values(["is_comp", "s1_id"], kind="stable").reset_index(drop=True)
+    def load_feats(path):   # float32 halves memory (competitor pairs double the table size)
+        df = pd.read_parquet(path)
+        num = [c for c in df.columns if c not in ("s1_id", "cand_id", "label", "is_comp") and df[c].dtype == np.float64]
+        df[num] = df[num].astype(np.float32)
+        return df.sort_values(["is_comp", "s1_id"], kind="stable").reset_index(drop=True)
+    tr = load_feats(f"{PQ}/full_train_feats.parquet")
+    va = load_feats(f"{PQ}/full_val_feats.parquet")
     say(f"loaded train {len(tr):,} / val {len(va):,} pairs (incl. competitor pairs)")
     m1 = lgb.Booster(model_file=os.path.join(OUT, "lgb_full.txt"))
 

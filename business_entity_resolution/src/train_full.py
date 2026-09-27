@@ -35,6 +35,16 @@ if __name__ == "__main__":
         tr = tr[tr.is_comp == 0].reset_index(drop=True)
         va = va[va.is_comp == 0].reset_index(drop=True)
     feats = [c for c in tr.columns if c not in ("s1_id", "cand_id", "label", "is_comp")]
+    ids = pd.read_parquet(f"{PQ}/full_val_ids.parquet").entity_id
+    gt = pd.read_parquet(f"{PQ}/train_ground_truth.parquet")
+    gt = gt[gt.source1_entity_id.isin(set(ids))]
+    truth = {s: set(m.split(",")) if m else set() for s, m in zip(gt.source1_entity_id, gt.matched_entity_ids)}
+    if os.path.exists(os.path.join(OUT, "lgb_full.txt")):   # previous model on THIS val set, for comparison
+        om = lgb.Booster(model_file=os.path.join(OUT, "lgb_full.txt"))
+        oj = json.load(open(os.path.join(OUT, "lgb_full.json")))
+        best_old = max(macro_f05(decide(va, om.predict(va[oj["features"]]), t), truth) for t in np.arange(0.4, 0.91, 0.05))
+        print(f"PREVIOUS stage-1 model on this val set: best F0.5 {best_old:.4f}", flush=True)
+        del om
     # early-stopping set: 10% of TRAIN entities (never the val entities we report on)
     ents = tr.s1_id.unique()
     es_ents = set(np.random.RandomState(SEED).choice(ents, len(ents) // 10, replace=False))
@@ -45,10 +55,6 @@ if __name__ == "__main__":
     print(f"trained {model.best_iteration} trees ({time.time()-t0:.0f}s)")
     p = model.predict(va[feats], num_iteration=model.best_iteration)
 
-    ids = pd.read_parquet(f"{PQ}/full_val_ids.parquet").entity_id
-    gt = pd.read_parquet(f"{PQ}/train_ground_truth.parquet")
-    gt = gt[gt.source1_entity_id.isin(set(ids))]
-    truth = {s: set(m.split(",")) if m else set() for s, m in zip(gt.source1_entity_id, gt.matched_entity_ids)}
     print("\n  threshold   F0.5")
     res = {}
     for thr in np.arange(0.3, 0.96, 0.05):

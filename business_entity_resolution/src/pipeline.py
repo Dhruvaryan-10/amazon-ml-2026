@@ -24,6 +24,10 @@ K = 50
 N_TRAIN, N_VAL = int(os.environ.get("N_TRAIN", 80_000)), int(os.environ.get("N_VAL", 25_000))
 FEAT_CHUNK = 60_000   # S1 entities per feature batch
 SEED = 42
+# The test pool has ~5.75 S2/S3 records per S1 vs ~4.68 in train: ~19% of test entities have no S1 row,
+# so their records are "orphans" that other S1s can wrongly claim. Training simulates this by dropping
+# DROP of the train S1 entities (their records become non-matches for everyone else).
+DROP = float(os.environ.get("DROP", 0.19))
 T0 = time.time()
 
 
@@ -39,7 +43,17 @@ def block(prefix, reuse=False):
     """-> s1 ids, candidate table (int rows) with candidate-side stats, pool ids.
     Cached to data/parquet/{prefix}_cands.parquet; reuse=True skips blocking if the cache exists."""
     cpath, ipath = f"{PQ}/{prefix}_cands.parquet", f"{PQ}/{prefix}_cand_ids.npz"
-    if reuse and os.path.exists(cpath):
+    if reuse == "fwd" and os.path.exists(cpath):
+        c = pd.read_parquet(cpath, columns=["s1_row", "o_row", "score", "rank"])
+        c = c[c["rank"].to_numpy() <= K].reset_index(drop=True)
+        z = np.load(ipath, allow_pickle=True)
+        say(f"reusing cached FORWARD {prefix} candidates: {len(c):,} pairs; recomputing reverse (REV_K={REV_K})")
+        s1 = load(prefix, 1, KEY_COLS)
+        s1_ids, c, pool_ids = _add_reverse(prefix, s1, c, z["pool"], {k: v * CAP_MULT for k, v in CAPS.items()})
+        c.to_parquet(cpath, index=False)
+        np.savez(ipath, s1=s1_ids, pool=pool_ids)
+        return s1_ids, c, pool_ids
+    if reuse is True and os.path.exists(cpath):
         c = pd.read_parquet(cpath)
         z = np.load(ipath, allow_pickle=True)
         say(f"reusing cached {prefix} candidates: {len(c):,} pairs")
@@ -51,7 +65,7 @@ def block(prefix, reuse=False):
 
 
 COMP_TOP = 3         # competitor S1s per record kept for S1-vs-S1 features (by blocking rank)
-REV_K = 5            # reverse blocking: each S2/S3 record proposes its top-5 S1 entities
+REV_K = 10           # reverse blocking: each S2/S3 record proposes its top-10 S1 entities
 
 
 def _block(prefix):
@@ -69,31 +83,57 @@ def _block(prefix):
     del idx; gc.collect()
     say(f"forward candidates: {len(c):,} pairs ({len(c)/len(s1):.1f} per S1)")
 
-    # ---- reverse: index S1, query every S2/S3 record ----
+    return _add_reverse(prefix, s1, c, pool_ids, caps)
+
+
+def _add_reverse(prefix, s1, c, pool_ids, caps):
+    """Reverse blocking: index S1, each S2/S3 record proposes its top-REV_K S1s; union with forward.
+    Union is done with sorted int64 keys (much less memory than a pandas outer merge)."""
     s1_ids = s1.entity_id.to_numpy()
     sidx = KeyIndex(s1, caps=caps)
     del s1; gc.collect()
     other = pd.concat([load(prefix, k, KEY_COLS) for k in "23"], ignore_index=True)
-    rev = []
+    rs, ro, rsc, rrk = [], [], [], []
     step = 500_000
     for a in range(0, len(other), step):
         r = sidx.query(other.iloc[a:a + step].reset_index(drop=True), k_max=REV_K, chunk=20000,
                        verbose=False, as_rows=True)
-        rev.append(pd.DataFrame({"s1_row": r.o_row.to_numpy(), "o_row": (r.s1_row.to_numpy() + a).astype(np.int32),
-                                 "rev_score": r.score.to_numpy(), "rev_rank": r["rank"].to_numpy()}))
+        rs.append(r.o_row.to_numpy().astype(np.int32)); ro.append((r.s1_row.to_numpy() + a).astype(np.int32))
+        rsc.append(r.score.to_numpy().astype(np.float32)); rrk.append(r["rank"].to_numpy().astype(np.int16))
         say(f"  reverse query {min(a+step, len(other)):,}/{len(other):,} records")
     del sidx, other; gc.collect()
-    rev = pd.concat(rev, ignore_index=True)
-    c = c.merge(rev, on=["s1_row", "o_row"], how="outer")
-    del rev; gc.collect()
-    new = c.score.isna().to_numpy()
-    c["score"] = c.score.fillna(0).astype(np.float32)
-    c["rank"] = c["rank"].fillna(K + 1).astype(np.int16)
-    c["rev_score"] = c.rev_score.fillna(0).astype(np.float32)
-    c["rev_rank"] = c.rev_rank.fillna(REV_K + 1).astype(np.int16)
+    rs, ro, rsc, rrk = (np.concatenate(x) for x in (rs, ro, rsc, rrk))
+    NP = np.int64(len(pool_ids))
+    fs1, fo = c.s1_row.to_numpy().astype(np.int32), c.o_row.to_numpy().astype(np.int32)
+    fsc, frk = c.score.to_numpy().astype(np.float32), c["rank"].to_numpy().astype(np.int16)
+    del c; gc.collect()
+    kf = fs1.astype(np.int64) * NP + fo
+    of = np.argsort(kf, kind="stable")
+    kf = kf[of]
+    kr = rs.astype(np.int64) * NP + ro
+    pos = np.searchsorted(kf, kr)
+    pos[pos >= len(kf)] = 0
+    found = kf[pos] == kr
+    del kf, kr; gc.collect()
+    f_rsc = np.zeros(len(fs1), dtype=np.float32)
+    f_rrk = np.full(len(fs1), REV_K + 1, dtype=np.int16)
+    f_rsc[of[pos[found]]] = rsc[found]
+    f_rrk[of[pos[found]]] = rrk[found]
+    del of, pos; gc.collect()
+    nf = ~found
+    c = pd.DataFrame({
+        "s1_row": np.concatenate([fs1, rs[nf]]), "o_row": np.concatenate([fo, ro[nf]]),
+        "score": np.concatenate([fsc, np.zeros(nf.sum(), dtype=np.float32)]),
+        "rank": np.concatenate([frk, np.full(nf.sum(), K + 1, dtype=np.int16)]),
+        "rev_score": np.concatenate([f_rsc, rsc[nf]]), "rev_rank": np.concatenate([f_rrk, rrk[nf]])})
+    added = int(nf.sum())
+    del fs1, fo, fsc, frk, f_rsc, f_rrk, rs, ro, rsc, rrk, found, nf; gc.collect()
     c = c.sort_values(["s1_row", "rank", "rev_rank"], kind="stable").reset_index(drop=True)
-    say(f"forward UNION reverse: {len(c):,} pairs ({new.sum():,} added by reverse; {len(c)/len(s1_ids):.1f} per S1)")
+    say(f"forward UNION reverse: {len(c):,} pairs ({added:,} added by reverse; {len(c)/len(s1_ids):.1f} per S1)")
+    return _cand_stats(c, s1_ids, pool_ids)
 
+
+def _cand_stats(c, s1_ids, pool_ids):
     # candidate-side stats over ALL S1: rank of this S1 among the S1s that picked this record,
     # how many S1s compete, and the score gap to the best OTHER S1 (same-name siblings)
     sc = (c.score.to_numpy() + c.rev_score.to_numpy()).astype(np.float32)
@@ -161,12 +201,36 @@ def label(pairs, truth_pairs):
     return np.array([(s, c) in truth_pairs for s, c in zip(pairs.s1_id.values, pairs.cand_id.values)], dtype=np.int8)
 
 
+def _rerank_reverse(c):
+    """After removing S1s, re-number each record's reverse ranks among the S1s that remain."""
+    rr = c.rev_rank.to_numpy().copy()
+    m = np.flatnonzero(rr <= REV_K)
+    orow_m = c.o_row.to_numpy()[m]
+    o = m[np.lexsort((rr[m], orow_m))]
+    orow = c.o_row.to_numpy()[o]
+    first = np.r_[0, np.flatnonzero(np.diff(orow)) + 1]
+    sizes = np.diff(np.r_[first, len(orow)])
+    rr[o] = (np.arange(len(o)) - np.repeat(first, sizes) + 1).astype(rr.dtype)
+    c["rev_rank"] = rr
+    return c
+
+
 def run_train(reuse=False):
     s1_ids, cands, pool_ids = block("train", reuse)
+    keep_s1 = np.ones(len(s1_ids), dtype=bool)
+    if DROP > 0:
+        keep_s1 = np.random.RandomState(SEED + 7).rand(len(s1_ids)) >= DROP
+        base = ["s1_row", "o_row", "score", "rank", "rev_score", "rev_rank"]
+        cands = cands.loc[keep_s1[cands.s1_row.to_numpy()], base].reset_index(drop=True)
+        gc.collect()
+        cands = _rerank_reverse(cands)
+        _, cands, _ = _cand_stats(cands, s1_ids, pool_ids)
+        say(f"test-like density: dropped {(~keep_s1).sum():,} S1 ({DROP:.0%}); {len(cands):,} pairs remain")
     split = pd.read_parquet(f"{PQ}/split.parquet").set_index("entity_id").loc[s1_ids]
     rng = np.random.RandomState(SEED)
     rows = np.arange(len(s1_ids))
-    tr_pool, va_pool = rows[~split.is_val.to_numpy()], rows[split.is_val.to_numpy()]
+    isv = split.is_val.to_numpy()
+    tr_pool, va_pool = rows[~isv & keep_s1], rows[isv & keep_s1]
     tr_rows = np.sort(rng.choice(tr_pool, min(N_TRAIN, len(tr_pool)), replace=False))
     va_rows = np.sort(rng.choice(va_pool, min(N_VAL, len(va_pool)), replace=False))
     gt = pd.read_parquet(f"{PQ}/train_ground_truth.parquet")
@@ -212,14 +276,14 @@ def run_train(reuse=False):
         del df, parts; gc.collect()
     pd.DataFrame({"entity_id": s1_ids[va_rows]}).to_parquet(f"{PQ}/full_val_ids.parquet", index=False)
     from explog import log
-    log(f"full-density blocking CAP_MULT={CAP_MULT} K={K}", notes="train pool, 25k val S1",
+    log(f"full-density blocking CAP_MULT={CAP_MULT} K={K} DROP={DROP}", notes="train pool, 25k val S1",
         blocking_recall=len(tv & got) / len(tv))
 
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "train"
     if mode == "train":
-        run_train(reuse="reuse" in sys.argv)
+        run_train(reuse="fwd" if "reusefwd" in sys.argv else ("reuse" in sys.argv))
     else:
         from predict import run_test
         run_test(reuse="reuse" in sys.argv)
